@@ -1,3 +1,5 @@
+"use client";
+
 import type { GetServerSidePropsContext } from "next";
 import type { ChangeEventHandler } from "react";
 import { useState } from "react";
@@ -45,6 +47,7 @@ function AppsSearch({
   onChange: ChangeEventHandler<HTMLInputElement>;
   className?: string;
 }) {
+  const { t } = useLocale();
   return (
     <TextField
       className="bg-subtle !border-muted !pl-0 focus:!ring-offset-0"
@@ -54,6 +57,7 @@ function AppsSearch({
       type="search"
       autoComplete="false"
       onChange={onChange}
+      placeholder={t("search")}
     />
   );
 }
@@ -62,7 +66,7 @@ export default function Apps({
   categories,
   appStore,
   userAdminTeams,
-}: inferSSRProps<typeof getServerSideProps>) {
+}: Omit<inferSSRProps<typeof getServerSideProps>, "trpcState">) {
   const { t } = useLocale();
   const [searchText, setSearchText] = useState<string | undefined>(undefined);
 

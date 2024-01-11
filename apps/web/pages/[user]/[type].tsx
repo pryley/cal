@@ -1,27 +1,38 @@
 import type { GetServerSidePropsContext } from "next";
+import { useSearchParams } from "next/navigation";
 import { z } from "zod";
 
 import { Booker } from "@calcom/atoms";
+import { getServerSession } from "@calcom/features/auth/lib/getServerSession";
+import { handleTypeRedirection } from "@calcom/features/booking-redirect/handle-type";
 import { getBookerWrapperClasses } from "@calcom/features/bookings/Booker/utils/getBookerWrapperClasses";
 import { BookerSeo } from "@calcom/features/bookings/components/BookerSeo";
-import {
-  getBookingForReschedule,
-  getBookingForSeatedEvent,
-  getMultipleDurationValue,
-} from "@calcom/features/bookings/lib/get-booking";
+import { getBookingForReschedule, getBookingForSeatedEvent } from "@calcom/features/bookings/lib/get-booking";
 import type { GetBookingType } from "@calcom/features/bookings/lib/get-booking";
-import { getSlugOrRequestedSlug } from "@calcom/features/ee/organizations/lib/orgDomains";
-import { orgDomainConfig } from "@calcom/features/ee/organizations/lib/orgDomains";
+import { orgDomainConfig, userOrgQuery } from "@calcom/features/ee/organizations/lib/orgDomains";
 import { getUsernameList } from "@calcom/lib/defaultEvents";
 import slugify from "@calcom/lib/slugify";
 import prisma from "@calcom/prisma";
+import { RedirectType } from "@calcom/prisma/client";
 
 import type { inferSSRProps } from "@lib/types/inferSSRProps";
 import type { EmbedProps } from "@lib/withEmbedSsr";
 
 import PageWrapper from "@components/PageWrapper";
 
+import { getTemporaryOrgRedirect } from "../../lib/getTemporaryOrgRedirect";
+
 export type PageProps = inferSSRProps<typeof getServerSideProps> & EmbedProps;
+
+export const getMultipleDurationValue = (
+  multipleDurationConfig: number[] | undefined,
+  queryDuration: string | string[] | null | undefined,
+  defaultValue: number
+) => {
+  if (!multipleDurationConfig) return null;
+  if (multipleDurationConfig.includes(Number(queryDuration))) return Number(queryDuration);
+  return defaultValue;
+};
 
 export default function Type({
   slug,
@@ -32,9 +43,10 @@ export default function Type({
   isBrandingHidden,
   isSEOIndexable,
   rescheduleUid,
-  entity,
-  duration,
+  eventData,
 }: PageProps) {
+  const searchParams = useSearchParams();
+
   return (
     <main className={getBookerWrapperClasses({ isEmbed: !!isEmbed })}>
       <BookerSeo
@@ -43,7 +55,8 @@ export default function Type({
         rescheduleUid={rescheduleUid ?? undefined}
         hideBranding={isBrandingHidden}
         isSEOIndexable={isSEOIndexable ?? true}
-        entity={entity}
+        entity={eventData.entity}
+        bookingData={booking}
       />
       <Booker
         username={user}
@@ -51,8 +64,16 @@ export default function Type({
         bookingData={booking}
         isAway={away}
         hideBranding={isBrandingHidden}
-        entity={entity}
-        duration={duration}
+        entity={eventData.entity}
+        durationConfig={eventData.metadata?.multipleDuration}
+        /* TODO: Currently unused, evaluate it is needed-
+         *       Possible alternative approach is to have onDurationChange.
+         */
+        duration={getMultipleDurationValue(
+          eventData.metadata?.multipleDuration,
+          searchParams?.get("duration"),
+          eventData.length
+        )}
       />
     </main>
   );
@@ -62,15 +83,13 @@ Type.isBookingPage = true;
 Type.PageWrapper = PageWrapper;
 
 async function getDynamicGroupPageProps(context: GetServerSidePropsContext) {
+  const session = await getServerSession(context);
   const { user: usernames, type: slug } = paramsSchema.parse(context.params);
-  const { rescheduleUid, bookingUid, duration: queryDuration } = context.query;
+  const { rescheduleUid, bookingUid } = context.query;
 
   const { ssrInit } = await import("@server/lib/ssr");
   const ssr = await ssrInit(context);
-  const { currentOrgDomain, isValidOrgDomain } = orgDomainConfig(
-    context.req.headers.host ?? "",
-    context.params?.orgSlug
-  );
+  const { currentOrgDomain, isValidOrgDomain } = orgDomainConfig(context.req, context.params?.orgSlug);
 
   const users = await prisma.user.findMany({
     where: {
@@ -91,13 +110,13 @@ async function getDynamicGroupPageProps(context: GetServerSidePropsContext) {
   if (!users.length) {
     return {
       notFound: true,
-    };
+    } as const;
   }
   const org = isValidOrgDomain ? currentOrgDomain : null;
 
   let booking: GetBookingType | null = null;
   if (rescheduleUid) {
-    booking = await getBookingForReschedule(`${rescheduleUid}`);
+    booking = await getBookingForReschedule(`${rescheduleUid}`, session?.user?.id);
   } else if (bookingUid) {
     booking = await getBookingForSeatedEvent(`${bookingUid}`);
   }
@@ -113,17 +132,19 @@ async function getDynamicGroupPageProps(context: GetServerSidePropsContext) {
   if (!eventData) {
     return {
       notFound: true,
-    };
+    } as const;
   }
 
   return {
     props: {
-      entity: eventData.entity,
-      duration: getMultipleDurationValue(
-        eventData.metadata?.multipleDuration,
-        queryDuration,
-        eventData.length
-      ),
+      eventData: {
+        entity: eventData.entity,
+        length: eventData.length,
+        metadata: {
+          ...eventData.metadata,
+          multipleDuration: [15, 30, 60],
+        },
+      },
       booking,
       user: usernames.join("+"),
       slug,
@@ -139,23 +160,36 @@ async function getDynamicGroupPageProps(context: GetServerSidePropsContext) {
 }
 
 async function getUserPageProps(context: GetServerSidePropsContext) {
+  const session = await getServerSession(context);
   const { user: usernames, type: slug } = paramsSchema.parse(context.params);
   const username = usernames[0];
-  const { rescheduleUid, bookingUid, duration: queryDuration } = context.query;
-  const { currentOrgDomain, isValidOrgDomain } = orgDomainConfig(
-    context.req.headers.host ?? "",
-    context.params?.orgSlug
-  );
+  const { rescheduleUid, bookingUid } = context.query;
+  const { currentOrgDomain, isValidOrgDomain } = orgDomainConfig(context.req, context.params?.orgSlug);
+  let outOfOffice = false;
+  const isOrgContext = currentOrgDomain && isValidOrgDomain;
+
+  if (!isOrgContext) {
+    const redirect = await getTemporaryOrgRedirect({
+      slug: usernames[0],
+      redirectType: RedirectType.User,
+      eventTypeSlug: slug,
+      currentQuery: context.query,
+    });
+
+    if (redirect) {
+      return redirect;
+    }
+  }
 
   const { ssrInit } = await import("@server/lib/ssr");
   const ssr = await ssrInit(context);
   const user = await prisma.user.findFirst({
     where: {
       username,
-      organization: isValidOrgDomain && currentOrgDomain ? getSlugOrRequestedSlug(currentOrgDomain) : null,
+      organization: userOrgQuery(context.req, context.params?.orgSlug),
     },
     select: {
-      away: true,
+      id: true,
       hideBranding: true,
       allowSEOIndexing: true,
     },
@@ -164,12 +198,24 @@ async function getUserPageProps(context: GetServerSidePropsContext) {
   if (!user) {
     return {
       notFound: true,
-    };
+    } as const;
+  }
+  // If user is found, quickly verify bookingRedirects
+  const result = await handleTypeRedirection({
+    userId: user.id,
+    username,
+    slug,
+  });
+  if (result && result.outOfOffice) {
+    outOfOffice = true;
+  }
+  if (result && result.redirect?.destination) {
+    return result;
   }
 
   let booking: GetBookingType | null = null;
   if (rescheduleUid) {
-    booking = await getBookingForReschedule(`${rescheduleUid}`);
+    booking = await getBookingForReschedule(`${rescheduleUid}`, session?.user?.id);
   } else if (bookingUid) {
     booking = await getBookingForSeatedEvent(`${bookingUid}`);
   }
@@ -186,21 +232,20 @@ async function getUserPageProps(context: GetServerSidePropsContext) {
   if (!eventData) {
     return {
       notFound: true,
-    };
+    } as const;
   }
 
   return {
     props: {
       booking,
-      duration: getMultipleDurationValue(
-        eventData.metadata?.multipleDuration,
-        queryDuration,
-        eventData.length
-      ),
-      away: user?.away,
+      eventData: {
+        entity: eventData.entity,
+        length: eventData.length,
+        metadata: eventData.metadata,
+      },
+      away: outOfOffice,
       user: username,
       slug,
-      entity: eventData.entity,
       trpcState: ssr.dehydrate(),
       isBrandingHidden: user?.hideBranding,
       isSEOIndexable: user?.allowSEOIndexing,

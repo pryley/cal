@@ -1,4 +1,4 @@
-import { useRef, useEffect } from "react";
+import { useRef } from "react";
 
 import dayjs from "@calcom/dayjs";
 import { useIsEmbed } from "@calcom/embed-core/embed-iframe";
@@ -93,32 +93,26 @@ export const AvailableTimeSlots = ({
 
   const slotsPerDay = useSlotsForAvailableDates(dates, schedule?.data?.slots);
 
-  useEffect(() => {
-    if (isEmbed) return;
-    if (containerRef.current && !schedule.isLoading && isMobile) {
-      containerRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [containerRef, schedule.isLoading, isEmbed, isMobile]);
-
   return (
     <>
       <div className="flex">
-        {schedule.isLoading
-          ? // Shows exact amount of days as skeleton.
-            Array.from({ length: 1 + (extraDays ?? 0) }).map((_, i) => <AvailableTimesSkeleton key={i} />)
-          : slotsPerDay.length > 0 &&
-            slotsPerDay.map((slots) => (
-              <AvailableTimesHeader
-                key={slots.date}
-                date={dayjs(slots.date)}
-                showTimeFormatToggle={!isColumnView}
-                availableMonth={
-                  dayjs(selectedDate).format("MM") !== dayjs(slots.date).format("MM")
-                    ? dayjs(slots.date).format("MMM")
-                    : undefined
-                }
-              />
-            ))}
+        {schedule.isLoading ? (
+          <div className="mb-3 h-8" />
+        ) : (
+          slotsPerDay.length > 0 &&
+          slotsPerDay.map((slots) => (
+            <AvailableTimesHeader
+              key={slots.date}
+              date={dayjs(slots.date)}
+              showTimeFormatToggle={!isColumnView}
+              availableMonth={
+                dayjs(selectedDate).format("MM") !== dayjs(slots.date).format("MM")
+                  ? dayjs(slots.date).format("MMM")
+                  : undefined
+              }
+            />
+          ))
+        )}
       </div>
       <div
         ref={containerRef}
@@ -132,7 +126,7 @@ export const AvailableTimeSlots = ({
           : slotsPerDay.length > 0 &&
             slotsPerDay.map((slots) => (
               <AvailableTimes
-                className="scroll-bar w-full overflow-auto"
+                className="scroll-bar w-full overflow-y-auto overflow-x-hidden"
                 key={slots.date}
                 showTimeFormatToggle={!isColumnView}
                 onTimeSelect={onTimeSelect}
